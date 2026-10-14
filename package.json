@@ -1,0 +1,25 @@
+{
+  "name": "dsh-skill-search",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "index.js",
+  "description": "DSH skill 按需检索：skill_search 工具（13 域 MECE 分组 + bigram 评分 + usage.json 调用频率排序），从 dsh-skill-lazy 抽取。",
+  "dependencies": {},
+  "peerDependencies": {
+    "@deepseek-ai/dsh": "*",
+    "@deepseek-ai/dsh-tools": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    }
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

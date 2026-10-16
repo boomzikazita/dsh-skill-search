@@ -1,6 +1,12 @@
 /**
  * dsh-skill-search — skill_search 按需检索工具（从 dsh-skill-lazy v0.1.0 抽取）
  *
+ * v0.1.1（2026-10-15）：
+ *   1. DOMAIN_MAP 补现役 hithink-finance-*（10 个）——原表是 8 月 67 技能快照，新技能走关键词
+ *      兜底时被 dev 的 'CLI'（描述里的 "hithink-finance CLI"）抢走，data/valuation/research
+ *      三个金融技能被误分到「代码开发」（实测）
+ *   2. a-share 关键词补 'a 股' 空格变体；覆盖报告的空域由 12 行刷屏改一行汇总（噪音）
+ *
  * 保留：
  *   1. skill_search：按查询词从完整技能目录检索，13 域 DOMAINS 中文关键词桥归域，
  *      bigram 评分（scoreSkill）排序，usage.json 调用频率做同分tiebreak并随结果展示，
@@ -11,7 +17,7 @@
  * skill_mece_check 工具、cost_audit 工具。
  */
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs'
-import { join, dirname } from 'node:path'
+import { join, dirname, resolve, isAbsolute } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -23,6 +29,20 @@ const HOME = homedir()
 const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url))
 const USAGE_FILE = join(PLUGIN_DIR, 'usage.json')
 const SKILLS_DIR = join(HOME, '.dsh', 'skills')
+
+// v0.2.1：技能文件路径归一。SkillSummary.path 可能是相对路径（实测 `.agents/skills/<名>/SKILL.md`，
+// 基准是宿主进程 cwd / 家目录），按「会话 cwd → 宿主 cwd → HOME」探测第一个真实存在的绝对路径。
+function absSkillFile(p, cwd) {
+  if (typeof p !== 'string' || !p) return null
+  const raw = p.replace(/^~(?=\/|$)/, HOME)
+  if (isAbsolute(raw)) return raw
+  for (const base of [cwd, process.cwd(), HOME]) {
+    if (!base) continue
+    const abs = resolve(base, raw)
+    if (existsSync(abs)) return abs
+  }
+  return null
+}
 
 // ---------- MECE 领域映射（互斥且穷尽） ----------
 // name → 领域 id 精确映射（67 个存量 skill 全量归类；新增未映射 skill 走关键词兜底 → other）
@@ -94,10 +114,23 @@ const DOMAIN_MAP = {
   'financial-report-deep-analysis': 'research',
   'technical-counter-examples': 'research',
   'hermes-agent-skill-authoring': 'skill-eng',
+  // v0.2.1：现役 hithink-finance-* 技能（10 个）归类修正——原表停留在 8 月的 67 技能快照，
+  // 新技能全走关键词兜底，而 dev 领域的关键词 'CLI' 又命中它们的描述（"hithink-finance CLI"），
+  // 把 data/valuation/research 三个金融技能误分到「代码开发」（实测）。
+  'hithink-finance-market': 'a-share',
+  'hithink-finance-financials': 'a-share',
+  'hithink-finance-fund': 'a-share',
+  'hithink-finance-index': 'a-share',
+  'hithink-finance-shared': 'a-share',
+  'hithink-finance-special-data': 'a-share',
+  'hithink-finance-data': 'a-share',
+  'hithink-finance-valuation': 'a-share',
+  'hithink-finance-research': 'a-share',
+  'hithink-finance-symbol': 'a-share',
 }
 
 const DOMAINS = [
-  { id: 'a-share', label: 'A股投资', keywords: ['A股', '股票', '行情', '复盘', '北向', '涨停', 'market', 'stock'] },
+  { id: 'a-share', label: 'A股投资', keywords: ['A股', 'a 股', '股票', '行情', '复盘', '北向', '涨停', 'market', 'stock'] },
   { id: 'gov-doc', label: '政务公文', keywords: ['公文', '请示', '通知', '报告', '纪要', '汇报', '讲话', 'gongwen', 'official'] },
   { id: 'office-doc', label: '办公文档', keywords: ['Word', 'Excel', 'PPT', 'PDF', 'docx', 'xlsx', 'pptx', '排版', '文档', 'OCR', '扫描', '提取文字'] },
   { id: 'dev', label: '代码开发', keywords: ['调试', 'debug', '代码', 'CLI', 'harness', 'patch', '编译', 'git'] },
@@ -240,11 +273,14 @@ export function apply(ctx, config = {}) {
 
   // ---------- 技能元数据读取（ctx.skills.list 优先，fallback 读 SKILLS_DIR frontmatter） ----------
   /** 给 skill 对象补充 triggers（官方 list 不保证返回；从 SKILL.md frontmatter 行级提取） */
-  function enrichTriggers(skills) {
+  function enrichTriggers(skills, cwd) {
     return (skills || []).map((s) => {
       if (s.triggers) return s
       try {
-        const f = join(SKILLS_DIR, s.name, 'SKILL.md')
+        // v0.2.1：优先用 SkillSummary.path（实测为相对路径 '.agents/skills/<名>/SKILL.md'）——
+        // 原实现只读 ~/.dsh/skills（本机为空）⇒ triggers 永不补充，评分少一路信号。
+        const f = (typeof s.path === 'string' && absSkillFile(s.path, cwd))
+          || join(SKILLS_DIR, s.name, 'SKILL.md')
         if (!existsSync(f)) return s
         const raw = readFileSync(f, 'utf8')
         const fm = raw.match(/^---\n([\s\S]*?)\n---/)
@@ -323,7 +359,7 @@ export function apply(ctx, config = {}) {
       }
       let all = []
       try {
-        all = enrichTriggers(await ctx.skills.list(lookup))
+        all = enrichTriggers(await ctx.skills.list(lookup), lookup.cwd)
       } catch {
         all = []
       }
@@ -363,16 +399,23 @@ export function apply(ctx, config = {}) {
       const matrix = coverageMatrix(all)
       lines.push('')
       lines.push('## 领域覆盖检查（穷尽性）')
-      const flags = matrix.filter((m) => m.gap !== '正常')
-      for (const m of matrix) {
-        lines.push(`- ${m.label}: ${m.count} 个技能 ${m.gap === '正常' ? '' : `⚠️ ${m.gap}`}`)
+      const filled = matrix.filter((m) => m.count > 0)
+      const empty = matrix.filter((m) => m.count === 0)
+      for (const m of filled) {
+        lines.push(`- ${m.label}: ${m.count} 个技能${m.count < 2 ? ' ⚠️ 弱域' : ''}`)
       }
-      if (flags.length === 0) {
+      if (empty.length) {
+        // v0.2.1：空域逐行刷屏改为一行汇总——原输出对只有 10 个技能的库报 12 行「⚠️ 空域」，
+        // 既是噪音也容易被误读成故障；空域语义是"未建"，不计入缺口告警。
+        lines.push(`- 未建领域（${empty.length}）：${empty.map((m) => m.label).join(' / ')}`)
+      }
+      const weak = filled.filter((m) => m.count === 1)
+      if (weak.length) {
         lines.push('')
-        lines.push('✅ 全部领域有技能覆盖，无缺口。')
-      } else {
+        lines.push(`ℹ️ 弱域（仅 1 个技能）：${weak.map((m) => m.label).join(' / ')}——如需覆盖可新建对应领域技能。`)
+      } else if (empty.length === 0) {
         lines.push('')
-        lines.push(`⚠️ 缺口领域：${flags.map((f) => f.label).join(' / ')}（如需覆盖，可新建对应领域技能）`)
+        lines.push('✅ 全部领域均有技能覆盖，无缺口。')
       }
       return lines.join('\n')
     },
